@@ -2,10 +2,9 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 const admin = require("firebase-admin");
-const { v4: uuidv4 } = require("uuid");
 const path = require("path");
-const wav = require("wav");
 const fs = require("fs");
+const { v4: uuidv4 } = require("uuid");
 
 const PORT = process.env.PORT || 3000;
 
@@ -26,6 +25,11 @@ app.set("views", path.join(__dirname, "views"));
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+const audioChunksDir = path.join(__dirname, "audio_chunks");
+if (!fs.existsSync(audioChunksDir)) {
+  fs.mkdirSync(audioChunksDir);
+}
+
 const clients = new Map();
 
 wss.on("connection", (ws) => {
@@ -35,7 +39,6 @@ wss.on("connection", (ws) => {
   clients.set(ws, { clientId });
 
   let isDeviceIdReceived = false;
-  let audioChunks = []; // Buffer to store audio chunks
 
   ws.on("message", async (message) => {
     const clientInfo = clients.get(ws);
@@ -54,8 +57,24 @@ wss.on("connection", (ws) => {
         return;
       }
     } else if (Buffer.isBuffer(message) && clientInfo.deviceId) {
-      // Append received audio chunk to the buffer
-      audioChunks.push(message);
+      console.log(`Received binary message from client ${clientInfo.clientId}`);
+      const chunkFileName = `${clientInfo.deviceId}_${Date.now()}.wav`;
+      const chunkFilePath = path.join(audioChunksDir, chunkFileName);
+
+      fs.writeFile(
+        chunkFilePath,
+        message,
+        { encoding: "binary" },
+        async (err) => {
+          if (err) {
+            console.error(`Error writing audio chunk:`, err);
+            ws.send(`Error: Failed to write audio chunk`);
+            return;
+          }
+
+          console.log(`Audio chunk written to ${chunkFilePath}`);
+        }
+      );
     } else {
       console.log(
         `Unexpected message type or missing device ID from client ${clientId}:`,
@@ -64,59 +83,10 @@ wss.on("connection", (ws) => {
     }
   });
 
-  ws.on("close", async () => {
+  ws.on("close", () => {
     console.log(
       `WebSocket disconnected for client ${clients.get(ws).clientId}`
     );
-
-    const clientInfo = clients.get(ws);
-
-    // Check if there are any audio chunks
-    if (audioChunks.length > 0 && clientInfo.deviceId) {
-      // Concatenate all audio chunks into a single buffer
-      const concatenatedBuffer = Buffer.concat(audioChunks);
-
-      // Write concatenated audio chunks to a WAV file
-      const fileName = `data_${clientInfo.deviceId}_${Date.now()}.wav`;
-      const filePath = path.join(__dirname, "audio_files", fileName);
-      const fileWriter = new wav.FileWriter(filePath, {
-        sampleRate: 6000, // Sample Rate: 44100 Hz
-        channels: 1, // Channels: Mono
-        bitDepth: 16, // Bit Depth: 16-bit
-        endianness: "LE", // Byte Order: Little-endian
-      });
-
-      fileWriter.write(concatenatedBuffer);
-      fileWriter.end();
-
-      fileWriter.on("finish", async () => {
-        console.log(`Audio file written to ${filePath}`);
-
-        // Upload the WAV file to Firebase Storage
-        try {
-          await bucket.upload(filePath);
-          console.log(`WAV file uploaded to Firebase Storage`);
-          ws.send(`WAV file successfully uploaded to Firebase Storage`);
-        } catch (error) {
-          console.error(
-            `Failed to upload WAV file to Firebase Storage:`,
-            error
-          );
-          ws.send(`Error: Failed to upload WAV file to Firebase Storage`);
-        }
-
-        // Delete the local WAV file
-        fs.unlinkSync(filePath);
-      });
-
-      fileWriter.on("error", (error) => {
-        console.error(`Error writing WAV file:`, error);
-        ws.send(`Error: Failed to write WAV file`);
-      });
-    }
-
-    // Clear the audioChunks buffer and remove the client entry
-    audioChunks = [];
     clients.delete(ws);
   });
 
@@ -127,6 +97,59 @@ wss.on("connection", (ws) => {
     );
   });
 });
+
+// Concatenate audio chunks and upload to Firebase Storage
+setInterval(async () => {
+  try {
+    const tempFiles = fs.readdirSync(audioChunksDir);
+    if (tempFiles.length === 0) return;
+
+    const concatenatedFileName = `concatenated_${Date.now()}.wav`;
+    const concatenatedFilePath = path.join(
+      __dirname,
+      "audio_files",
+      concatenatedFileName
+    );
+
+    const writeStream = fs.createWriteStream(concatenatedFilePath);
+
+    for (const file of tempFiles) {
+      const filePath = path.join(audioChunksDir, file);
+      const data = fs.readFileSync(filePath);
+      fs.unlinkSync(filePath);
+      writeStream.write(data);
+    }
+
+    writeStream.end();
+
+    await bucket.upload(concatenatedFilePath);
+    console.log(`Concatenated audio file uploaded to Firebase Storage`);
+
+    fs.unlinkSync(concatenatedFilePath);
+  } catch (error) {
+    console.error(`Error processing audio chunks:`, error);
+  }
+}, 5000); // Adjust the interval as needed
+
+app.get("/files", async (req, res) => {
+  try {
+    const [files] = await bucket.getFiles();
+    const fileMetadata = files.map((file) => {
+      const fileNameParts = file.name.split("_");
+      return {
+        name: file.name,
+        timestamp: new Date(parseInt(fileNameParts[2].split(".")[0])),
+        deviceId: fileNameParts[1],
+      };
+    });
+    res.render("files", { audioFiles: fileMetadata, bucketName: bucket.name });
+  } catch (err) {
+    console.error("Error fetching files from Firebase Storage:", err);
+    res.status(500).send("Internal server error");
+  }
+});
+
+app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
