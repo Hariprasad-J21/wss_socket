@@ -2,7 +2,6 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 const admin = require("firebase-admin");
-const stream = require("stream");
 const { v4: uuidv4 } = require("uuid");
 const path = require("path");
 const wav = require("wav");
@@ -27,18 +26,7 @@ app.set("views", path.join(__dirname, "views"));
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const audioFiles = [];
 const clients = new Map();
-
-// Function to ensure the directory exists
-const ensureDirectoryExistence = (filePath) => {
-  const dirname = path.dirname(filePath);
-  if (fs.existsSync(dirname)) {
-    return true;
-  }
-  ensureDirectoryExistence(dirname);
-  fs.mkdirSync(dirname);
-};
 
 wss.on("connection", (ws) => {
   console.log("WebSocket connected");
@@ -47,6 +35,7 @@ wss.on("connection", (ws) => {
   clients.set(ws, { clientId });
 
   let isDeviceIdReceived = false;
+  let audioChunks = []; // Buffer to store audio chunks
 
   ws.on("message", async (message) => {
     const clientInfo = clients.get(ws);
@@ -65,17 +54,31 @@ wss.on("connection", (ws) => {
         return;
       }
     } else if (Buffer.isBuffer(message) && clientInfo.deviceId) {
-      const timestamp = new Date();
+      // Append received audio chunk to the buffer
+      audioChunks.push(message);
+    } else {
       console.log(
-        `Received binary message from client ${clientInfo.clientId} at ${timestamp}`
+        `Unexpected message type or missing device ID from client ${clientId}:`,
+        message
       );
+    }
+  });
 
+  ws.on("close", async () => {
+    console.log(
+      `WebSocket disconnected for client ${clients.get(ws).clientId}`
+    );
+
+    const clientInfo = clients.get(ws);
+
+    // Check if there are any audio chunks
+    if (audioChunks.length > 0 && clientInfo.deviceId) {
+      // Concatenate all audio chunks into a single buffer
+      const concatenatedBuffer = Buffer.concat(audioChunks);
+
+      // Write concatenated audio chunks to a WAV file
       const fileName = `data_${clientInfo.deviceId}_${Date.now()}.wav`;
       const filePath = path.join(__dirname, "audio_files", fileName);
-
-      // Ensure the directory exists
-      ensureDirectoryExistence(filePath);
-
       const fileWriter = new wav.FileWriter(filePath, {
         sampleRate: 6000, // Sample Rate: 44100 Hz
         channels: 1, // Channels: Mono
@@ -83,18 +86,11 @@ wss.on("connection", (ws) => {
         endianness: "LE", // Byte Order: Little-endian
       });
 
-      fileWriter.write(message);
+      fileWriter.write(concatenatedBuffer);
       fileWriter.end();
 
       fileWriter.on("finish", async () => {
         console.log(`Audio file written to ${filePath}`);
-
-        // Store metadata of the file
-        audioFiles.push({
-          timestamp,
-          fileName,
-          deviceId: clientInfo.deviceId,
-        });
 
         // Upload the WAV file to Firebase Storage
         try {
@@ -117,18 +113,10 @@ wss.on("connection", (ws) => {
         console.error(`Error writing WAV file:`, error);
         ws.send(`Error: Failed to write WAV file`);
       });
-    } else {
-      console.log(
-        `Unexpected message type or missing device ID from client ${clientId}:`,
-        message
-      );
     }
-  });
 
-  ws.on("close", () => {
-    console.log(
-      `WebSocket disconnected for client ${clients.get(ws).clientId}`
-    );
+    // Clear the audioChunks buffer and remove the client entry
+    audioChunks = [];
     clients.delete(ws);
   });
 
@@ -139,26 +127,6 @@ wss.on("connection", (ws) => {
     );
   });
 });
-
-app.get("/files", async (req, res) => {
-  try {
-    const [files] = await bucket.getFiles();
-    const fileMetadata = files.map((file) => {
-      const fileNameParts = file.name.split("_");
-      return {
-        name: file.name,
-        timestamp: new Date(parseInt(fileNameParts[2].split(".")[0])),
-        deviceId: fileNameParts[1],
-      };
-    });
-    res.render("files", { audioFiles: fileMetadata, bucketName: bucket.name });
-  } catch (err) {
-    console.error("Error fetching files from Firebase Storage:", err);
-    res.status(500).send("Internal server error");
-  }
-});
-
-app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
