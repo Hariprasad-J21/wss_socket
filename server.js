@@ -77,7 +77,7 @@ wss.on("connection", (ws) => {
       ensureDirectoryExistence(filePath);
 
       const fileWriter = new wav.FileWriter(filePath, {
-        sampleRate: 44100, // Sample Rate: 44100 Hz
+        sampleRate: 6000, // Sample Rate: 44100 Hz
         channels: 1, // Channels: Mono
         bitDepth: 16, // Bit Depth: 16-bit
         endianness: "LE", // Byte Order: Little-endian
