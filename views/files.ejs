@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Audio Files</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background-color: #f0f0f0;
+        margin: 0;
+        padding: 20px;
+      }
+      h1 {
+        text-align: center;
+        color: #333;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+        background-color: #fff;
+      }
+      th,
+      td {
+        padding: 10px;
+        border: 1px solid #ddd;
+        text-align: center;
+      }
+      th {
+        background-color: #4caf50;
+        color: white;
+      }
+      tr:nth-child(even) {
+        background-color: #f2f2f2;
+      }
+      tr:hover {
+        background-color: #ddd;
+      }
+      a {
+        color: #4caf50;
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Audio Files</h1>
+    <table>
+      <thead>
+        <tr>
+          <th>Device ID</th>
+          <th>Timestamp</th>
+          <th>File</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% audioFiles.forEach(file => { %>
+        <tr>
+          <td><%= file.deviceId %></td>
+          <td><%= file.timestamp.toLocaleString() %></td>
+          <td>
+            <a
+              href="https://firebasestorage.googleapis.com/v0/b/<%= bucketName %>/o/<%= encodeURIComponent(file.name) %>?alt=media"
+              download="<%= file.name %>"
+              ><%= file.name %></a
+            >
+          </td>
+        </tr>
+        <% }); %>
+      </tbody>
+    </table>
+  </body>
+</html>
